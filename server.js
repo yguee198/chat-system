@@ -4,10 +4,54 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const { Server } = require('socket.io');
 const path = require('path');
+const multer = require('multer');
+const nodemailer = require('nodemailer');
+const crypto = require('crypto');
 
 const User = require('./models/User');
 const Message = require('./models/Message');
 const { auth, generateToken, JWT_SECRET } = require('./middleware/auth');
+
+// Ensure uploads directory exists
+const fs = require('fs');
+const uploadsDir = path.join(__dirname, 'public', 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Multer configuration for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (req, file, cb) => {
+    cb(null, `${req.user._id}-${Date.now()}${path.extname(file.originalname)}`);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 2 * 1024 * 1024 }, // 2MB
+  fileFilter: (req, file, cb) => {
+    const allowed = /jpeg|jpg|png|gif/;
+    const ext = allowed.test(path.extname(file.originalname).toLowerCase());
+    const mime = allowed.test(file.mimetype);
+    if (ext && mime) cb(null, true);
+    else cb(new Error('Only images allowed'));
+  }
+});
+
+// Nodemailer transporter configuration
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
+});
+
+// Base URL for verification emails
+const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 
 const app = express();
 const server = http.createServer(app);
@@ -34,6 +78,91 @@ mongoose.connect(MONGO_URI)
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/messages', require('./routes/messages'));
+
+// Profile upload endpoint
+app.post('/api/users/upload-profile', auth, upload.single('profileImage'), async (req, res) => {
+  try {
+    console.log('Upload request received, file:', req.file);
+    console.log('User ID:', req.user._id);
+
+    if (!req.file) {
+      return res.status(400).json({ message: 'No file uploaded' });
+    }
+
+    const profileImagePath = `/uploads/${req.file.filename}`;
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { profileImage: profileImagePath },
+      { new: true }
+    );
+
+    console.log('Updated user profileImage:', user.profileImage);
+
+    // Return user without password
+    const userObj = user.toObject();
+    delete userObj.password;
+
+    res.json(userObj);
+  } catch (error) {
+    console.log('Upload error:', error);
+    res.status(500).json({ message: 'Upload error', error: error.message });
+  }
+}, (error, req, res, next) => {
+  console.log('Multer error:', error);
+  res.status(400).json({ message: error.message });
+});
+
+// Email verification endpoint
+app.get('/api/auth/verify/:token', async (req, res) => {
+  try {
+    const user = await User.findOne({
+      verificationToken: req.params.token,
+      verificationExpires: { $gt: Date.now() }
+    });
+
+    if (!user) {
+      return res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <script src="https://cdn.tailwindcss.com"></script>
+        </head>
+        <body class="bg-slate-900 min-h-screen flex items-center justify-center">
+          <div class="bg-slate-800 p-8 rounded-2xl text-center">
+            <h1 class="text-2xl font-bold text-red-400 mb-4">Invalid or Expired Link</h1>
+            <p class="text-slate-300 mb-4">This verification link is invalid or has expired.</p>
+            <a href="/" class="text-indigo-400 hover:text-indigo-300">Go to Login</a>
+          </div>
+        </body>
+        </html>
+      `);
+    }
+
+    user.isVerified = true;
+    user.verificationToken = undefined;
+    user.verificationExpires = undefined;
+    await user.save();
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <script src="https://cdn.tailwindcss.com"></script>
+      </head>
+      <body class="bg-slate-900 min-h-screen flex items-center justify-center">
+        <div class="bg-slate-800 p-8 rounded-2xl text-center">
+          <h1 class="text-2xl font-bold text-green-400 mb-4">Email Verified!</h1>
+          <p class="text-slate-300 mb-4">Your email has been verified. You can now log in.</p>
+          <a href="/" class="text-indigo-400 hover:text-indigo-300">Go to Login</a>
+        </div>
+      </body>
+      </html>
+    `);
+  } catch (error) {
+    res.status(500).send('Server error');
+  }
+});
+
 
 // Socket.io logic
 const onlineUsers = new Map();
@@ -83,8 +212,8 @@ io.on('connection', (socket) => {
       await message.save();
 
       const populatedMessage = await Message.findById(message._id)
-        .populate('sender', 'username')
-        .populate('recipient', 'username');
+        .populate('sender', 'username profileImage')
+        .populate('recipient', 'username profileImage');
 
       // Send to recipient if online
       const recipientSocketId = onlineUsers.get(recipientId);
@@ -110,8 +239,8 @@ io.on('connection', (socket) => {
           { sender: userId2, recipient: userId1 }
         ]
       })
-        .populate('sender', 'username')
-        .populate('recipient', 'username')
+        .populate('sender', 'username profileImage')
+        .populate('recipient', 'username profileImage')
         .sort({ createdAt: 1 });
 
       socket.emit('message:history', messages);

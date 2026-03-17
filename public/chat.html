@@ -59,8 +59,18 @@
       <!-- User Info -->
       <div class="p-4 border-b border-slate-700">
         <div class="flex items-center gap-3">
-          <div class="w-10 h-10 rounded-full bg-indigo-500 flex items-center justify-center text-white font-semibold" id="userInitial">
-            U
+          <div class="relative">
+            <div class="w-10 h-10 rounded-full bg-indigo-500 flex items-center justify-center text-white font-semibold" id="userInitial">
+              U
+            </div>
+            <img id="userProfileImage" class="hidden absolute inset-0 w-10 h-10 rounded-full object-cover" alt="Profile">
+            <label for="profileUpload" class="absolute bottom-0 right-0 w-4 h-4 bg-indigo-500 rounded-full flex items-center justify-center cursor-pointer hover:bg-indigo-600">
+              <svg class="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"></path>
+              </svg>
+            </label>
+            <input type="file" id="profileUpload" accept="image/*" class="hidden">
           </div>
           <div>
             <p class="text-white font-medium" id="currentUsername">User</p>
@@ -131,6 +141,8 @@
     let currentUser = null;
     let selectedUserId = null;
     let onlineUsers = new Set();
+    const unreadMessages = {}; // Track unread messages per user
+    const usersData = {}; // Store user data including profile images
 
     // Initialize
     document.addEventListener('DOMContentLoaded', () => {
@@ -146,11 +158,66 @@
       document.getElementById('currentUsername').textContent = currentUser.username;
       document.getElementById('userInitial').textContent = currentUser.username.charAt(0).toUpperCase();
 
+      // Update profile image if exists
+      if (currentUser.profileImage) {
+        const profileImg = document.getElementById('userProfileImage');
+        profileImg.src = currentUser.profileImage + '?t=' + Date.now();
+        profileImg.classList.remove('hidden');
+        document.getElementById('userInitial').classList.add('hidden');
+      }
+
       // Join socket
       socket.emit('user:join', token);
 
       // Load users
       loadUsers();
+    });
+
+    // Profile upload
+    document.getElementById('profileUpload').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const token = localStorage.getItem('token');
+      const formData = new FormData();
+      formData.append('profileImage', file);
+
+      try {
+        const res = await fetch('/api/users/upload-profile', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` },
+          body: formData
+        });
+
+        console.log('Upload response status:', res.status);
+
+        if (res.ok) {
+          const user = await res.json();
+          console.log('Uploaded user data:', user);
+          console.log('Profile image path:', user.profileImage);
+
+          currentUser = user;
+          localStorage.setItem('user', JSON.stringify(user));
+
+          // Update UI
+          const profileImg = document.getElementById('userProfileImage');
+          const newSrc = user.profileImage + '?t=' + Date.now();
+          console.log('Setting image src to:', newSrc);
+          profileImg.src = newSrc;
+          profileImg.classList.remove('hidden');
+          document.getElementById('userInitial').classList.add('hidden');
+
+          console.log('Profile image element:', profileImg);
+          console.log('userInitial element:', document.getElementById('userInitial'));
+        } else {
+          const result = await res.json();
+          console.error('Upload failed:', result);
+          alert(result.message || 'Upload failed');
+        }
+      } catch (error) {
+        console.error('Upload error:', error);
+        alert('Upload failed');
+      }
     });
 
     // Socket events
@@ -162,19 +229,126 @@
     socket.on('user:online', (userId) => {
       onlineUsers.add(userId);
       updateUserStatus();
+      // Update chat status if chatting with this user
+      if (selectedUserId === userId) {
+        document.getElementById('chatStatus').textContent = 'Online';
+      }
     });
 
     socket.on('user:offline', (userId) => {
       onlineUsers.delete(userId);
       updateUserStatus();
-    });
-
-    socket.on('message:receive', (message) => {
-      if (message.sender._id === selectedUserId) {
-        appendMessage(message, 'received');
-        scrollToBottom();
+      // Update chat status if chatting with this user
+      if (selectedUserId === userId) {
+        document.getElementById('chatStatus').textContent = 'Offline';
       }
     });
+
+    socket.on('message:receive', async (message) => {
+      const senderId = message.sender._id;
+
+      // Check if user exists in contacts list
+      if (!document.querySelector(`[data-id="${senderId}"]`)) {
+        // Fetch user and add to contacts
+        await fetchUserAndAddToList(senderId);
+      }
+
+      // Show notification if not currently chatting with sender
+      if (senderId === selectedUserId) {
+        appendMessage(message, 'received');
+        scrollToBottom();
+      } else {
+        // Show unread notification
+        showUnreadNotification(senderId, message.content);
+      }
+    });
+
+    // Fetch user by ID and add to contacts list
+    async function fetchUserAndAddToList(userId) {
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(`/api/users/${userId}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (res.ok) {
+          const user = await res.json();
+          usersData[user._id] = user;
+          addUserToList(user);
+        }
+      } catch (error) {
+        console.error('Error fetching user:', error);
+      }
+    }
+
+    // Add user to the contacts list
+    function addUserToList(user) {
+      const usersList = document.getElementById('usersList');
+      const existingBtn = usersList.querySelector(`[data-id="${user._id}"]`);
+
+      if (existingBtn) return; // Already exists
+
+      const userDiv = document.createElement('div');
+      userDiv.innerHTML = `
+        <button class="user-btn w-full flex items-center gap-3 p-3 rounded-xl hover:bg-slate-700/50 transition-colors text-left" data-id="${user._id}" data-username="${user.username}">
+          <div class="relative">
+            ${user.profileImage
+              ? `<img src="${user.profileImage}" class="w-10 h-10 rounded-full object-cover" alt="${user.username}">`
+              : `<div class="w-10 h-10 rounded-full bg-slate-600 flex items-center justify-center text-white font-semibold">${user.username.charAt(0).toUpperCase()}</div>`
+            }
+            <span class="status-dot absolute bottom-0 right-0 w-3 h-3 rounded-full bg-slate-500 border-2 border-slate-800"></span>
+          </div>
+          <div class="flex-1 min-w-0">
+            <p class="text-white font-medium truncate">${user.username}</p>
+            <p class="text-xs text-slate-500">Click to chat</p>
+          </div>
+        </button>
+      `;
+
+      // Insert at the beginning
+      const btn = userDiv.firstElementChild;
+      usersList.insertBefore(btn, usersList.firstChild);
+      btn.addEventListener('click', () => selectUser(btn.dataset.id, btn.dataset.username));
+
+      // Add unread badge
+      const badgeDiv = document.createElement('div');
+      badgeDiv.id = `unread-${user._id}`;
+      badgeDiv.className = 'hidden absolute top-2 right-2 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center';
+      badgeDiv.textContent = '0';
+      btn.querySelector('.relative').appendChild(badgeDiv);
+    }
+
+    // Show unread notification
+    function showUnreadNotification(userId, message) {
+      // Store unread message
+      unreadMessages[userId] = (unreadMessages[userId] || 0) + 1;
+
+      // Update or create badge
+      let badge = document.getElementById(`unread-${userId}`);
+      if (!badge) {
+        const userBtn = document.querySelector(`[data-id="${userId}"]`);
+        if (userBtn) {
+          badge = document.createElement('div');
+          badge.id = `unread-${userId}`;
+          badge.className = 'absolute top-2 right-2 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center';
+          userBtn.querySelector('.relative').appendChild(badge);
+        }
+      }
+
+      if (badge) {
+        badge.classList.remove('hidden');
+        badge.textContent = unreadMessages[userId];
+      }
+    }
+
+    // Clear unread messages when selecting user
+    function clearUnreadMessages(userId) {
+      delete unreadMessages[userId];
+      const badge = document.getElementById(`unread-${userId}`);
+      if (badge) {
+        badge.classList.add('hidden');
+      }
+    }
 
     socket.on('message:sent', (message) => {
       appendMessage(message, 'sent');
@@ -203,6 +377,10 @@
 
         if (res.ok) {
           const users = await res.json();
+          // Store user data
+          users.forEach(user => {
+            usersData[user._id] = user;
+          });
           renderUsers(users);
         }
       } catch (error) {
@@ -215,10 +393,12 @@
       usersList.innerHTML = users.map(user => `
         <button class="user-btn w-full flex items-center gap-3 p-3 rounded-xl hover:bg-slate-700/50 transition-colors text-left" data-id="${user._id}" data-username="${user.username}">
           <div class="relative">
-            <div class="w-10 h-10 rounded-full bg-slate-600 flex items-center justify-center text-white font-semibold">
-              ${user.username.charAt(0).toUpperCase()}
-            </div>
+            ${user.profileImage
+              ? `<img src="${user.profileImage}" class="w-10 h-10 rounded-full object-cover" alt="${user.username}">`
+              : `<div class="w-10 h-10 rounded-full bg-slate-600 flex items-center justify-center text-white font-semibold">${user.username.charAt(0).toUpperCase()}</div>`
+            }
             <span class="status-dot absolute bottom-0 right-0 w-3 h-3 rounded-full bg-slate-500 border-2 border-slate-800"></span>
+            <div id="unread-${user._id}" class="hidden absolute top-2 right-2 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">0</div>
           </div>
           <div class="flex-1 min-w-0">
             <p class="text-white font-medium truncate">${user.username}</p>
@@ -247,6 +427,10 @@
 
     function selectUser(userId, username) {
       selectedUserId = userId;
+      const userData = usersData[userId];
+
+      // Clear unread messages
+      clearUnreadMessages(userId);
 
       // Update UI
       document.querySelectorAll('.user-btn').forEach(btn => {
@@ -257,7 +441,15 @@
       });
 
       document.getElementById('chatUsername').textContent = username;
-      document.getElementById('chatUserInitial').textContent = username.charAt(0).toUpperCase();
+
+      // Update profile image in chat header
+      const chatUserInitial = document.getElementById('chatUserInitial');
+      if (userData?.profileImage) {
+        chatUserInitial.outerHTML = `<img id="chatUserInitial" src="${userData.profileImage}" class="w-10 h-10 rounded-full object-cover" alt="${username}">`;
+      } else {
+        chatUserInitial.outerHTML = `<div id="chatUserInitial" class="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center text-white font-semibold">${username.charAt(0).toUpperCase()}</div>`;
+      }
+
       document.getElementById('chatStatus').textContent = onlineUsers.has(userId) ? 'Online' : 'Offline';
 
       const input = document.getElementById('messageInput');

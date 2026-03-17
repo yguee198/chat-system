@@ -29,7 +29,17 @@ const userSchema = new mongoose.Schema({
   lastSeen: {
     type: Date,
     default: Date.now
-  }
+  },
+  profileImage: {
+    type: String,
+    default: null
+  },
+  isVerified: {
+    type: Boolean,
+    default: false
+  },
+  verificationToken: String,
+  verificationExpires: Date
 }, {
   timestamps: true
 });

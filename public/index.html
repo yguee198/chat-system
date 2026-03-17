@@ -126,6 +126,27 @@
       </p>
     </div>
 
+    <!-- Verification Message -->
+    <div class="glass-card rounded-2xl p-8 fade-in hidden" id="verificationMessage">
+      <div class="text-center">
+        <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-indigo-500/20 mb-4">
+          <svg class="w-8 h-8 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
+          </svg>
+        </div>
+        <h2 class="text-2xl font-semibold text-white mb-4">Check your email</h2>
+        <p class="text-slate-300 mb-6">We've sent a verification link to your email address. Please check your inbox and click the link to verify your account.</p>
+        <button id="resendVerification" class="text-indigo-400 hover:text-indigo-300 font-medium">
+          Resend verification email
+        </button>
+        <p class="text-center text-slate-400 mt-6">
+          <button id="backToLogin" class="text-indigo-400 hover:text-indigo-300 font-medium ml-1">
+            Back to login
+          </button>
+        </p>
+      </div>
+    </div>
+
     <!-- Toast Notification -->
     <div id="toast" class="fixed bottom-4 right-4 bg-red-500 text-white px-6 py-3 rounded-lg shadow-lg transform translate-y-20 opacity-0 transition-all duration-300">
       <span id="toastMessage"></span>
@@ -147,6 +168,12 @@
 
     showLogin.addEventListener('click', () => {
       registerForm.classList.add('hidden');
+      loginForm.classList.remove('hidden');
+    });
+
+    // Back to login from verification
+    document.getElementById('backToLogin')?.addEventListener('click', () => {
+      document.getElementById('verificationMessage').classList.add('hidden');
       loginForm.classList.remove('hidden');
     });
 
@@ -209,9 +236,41 @@
         const result = await res.json();
 
         if (res.ok) {
-          localStorage.setItem('token', result.token);
-          localStorage.setItem('user', JSON.stringify(result.user));
-          window.location.href = '/chat';
+          if (result.requiresVerification) {
+            // Show verification message
+            loginForm.classList.add('hidden');
+            document.getElementById('registerForm').classList.add('hidden');
+            document.getElementById('verificationMessage').classList.remove('hidden');
+            showToast(result.message, 'success');
+          } else {
+            localStorage.setItem('token', result.token);
+            localStorage.setItem('user', JSON.stringify(result.user));
+            window.location.href = '/chat';
+          }
+        } else {
+          showToast(result.message);
+        }
+      } catch (error) {
+        showToast('Connection error');
+      }
+    });
+
+    // Resend verification
+    document.getElementById('resendVerification')?.addEventListener('click', async () => {
+      const email = document.querySelector('input[name="email"]').value;
+      if (!email) {
+        showToast('Please enter your email');
+        return;
+      }
+      try {
+        const res = await fetch('/api/auth/resend-verification', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email })
+        });
+        const result = await res.json();
+        if (res.ok) {
+          showToast(result.message, 'success');
         } else {
           showToast(result.message);
         }
